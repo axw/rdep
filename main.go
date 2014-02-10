@@ -10,7 +10,6 @@ import (
 	"go/build"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 )
 
@@ -38,34 +37,20 @@ func listPackages(path string) ([]string, error) {
 	return strings.Fields(string(out)), nil
 }
 
-// getSourceImports runs "go list" with the specified path,
-// and then gathers the imports for each listed package.
-func getSourceImports(path string) (map[string][]string, error) {
-	packages, err := listPackages(path)
-	if err != nil {
-		return nil, err
-	}
-	imports := make(map[string][]string)
-	for _, path := range packages {
+// getPackages imports and returns a build.Package for each listed package.
+func getPackages(paths []string) (map[string]*build.Package, error) {
+	packages := make(map[string]*build.Package)
+	for _, path := range paths {
 		pkg, err := build.Import(path, ".", 0)
 		if err != nil {
 			return nil, err
 		}
-		imports[path] = pkg.Imports
-		if testImports {
-			imports[path] = append(imports[path], pkg.TestImports...)
-			imports[path] = append(imports[path], pkg.XTestImports...)
-		}
-		sort.Strings(imports[path])
+		packages[path] = pkg
 	}
-	return imports, nil
+	return packages, nil
 }
 
 func Main() error {
-	imports, err := getSourceImports(flag.Args()[0])
-	if err != nil {
-		return err
-	}
 	targets := make(map[string]bool)
 	for _, arg := range flag.Args()[1:] {
 		packages, err := listPackages(arg)
@@ -76,19 +61,51 @@ func Main() error {
 			targets[path] = true
 		}
 	}
-	for path, imports := range imports {
-		if targets[path] {
+	paths, err := listPackages(flag.Args()[0])
+	if err != nil {
+		return err
+	}
+	packages, err := getPackages(paths)
+	if err != nil {
+		return err
+	}
+	for path, _ := range packages {
+		if imports(path, packages, targets, testImports) {
 			fmt.Println(path)
-		} else {
-			for _, imp := range imports {
-				if targets[imp] {
-					fmt.Println(path)
-					break
-				}
-			}
 		}
 	}
 	return nil
+}
+
+// imports returns true if path imports any
+// of the packages in "any", transitively.
+func imports(path string, packages map[string]*build.Package, any map[string]bool, testImports bool) (res bool) {
+	if any[path] {
+		return true
+	}
+	pkg, _ := packages[path]
+	if pkg == nil {
+		return false
+	}
+	if testImports {
+		for _, imp := range pkg.TestImports {
+			if any[imp] {
+				return true
+			}
+		}
+		for _, imp := range pkg.XTestImports {
+			if any[imp] {
+				return true
+			}
+		}
+	}
+	for _, imp := range pkg.Imports {
+		if imports(imp, packages, any, false) {
+			any[path] = true
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
